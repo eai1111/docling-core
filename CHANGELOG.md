@@ -1,3 +1,40 @@
+## [v2.17.2](https://github.com/DS4SD/docling-core/releases/tag/v2.17.2) - 2025-02-06
+
+### Fix
+
+* Define LTR/RTL text direction in HTML export ([#152](https://github.com/DS4SD/docling-core/issues/152)) ([`3cf31cb`](https://github.com/DS4SD/docling-core/commit/3cf31cbe384e3f77a375aa057ef61d156d990b23))
+
+## [v2.17.1](https://github.com/DS4SD/docling-core/releases/tag/v2.17.1) - 2025-02-03
+
+### Fix
+
+* Image fallback for malformed equations ([#149](https://github.com/DS4SD/docling-core/issues/149)) ([`eb9b4b3`](https://github.com/DS4SD/docling-core/commit/eb9b4b39a1a2f81baf72d3fa3bbc7cd8ed594c1c))
+
+## [v2.17.0](https://github.com/DS4SD/docling-core/releases/tag/v2.17.0) - 2025-02-03
+
+### Feature
+
+* **HTML:** Fallback showing formulas as images ([#146](https://github.com/DS4SD/docling-core/issues/146)) ([`23477f7`](https://github.com/DS4SD/docling-core/commit/23477f76741b3593734287776fdf5e0761558c2d))
+* **HTML:** Export formulas with mathml ([#144](https://github.com/DS4SD/docling-core/issues/144)) ([`ed36437`](https://github.com/DS4SD/docling-core/commit/ed36437346177b9249c98df3eb5ddeadef004c59))
+
+### Fix
+
+* Add html escape in md export and fix formula escapes ([#143](https://github.com/DS4SD/docling-core/issues/143)) ([`c6590e8`](https://github.com/DS4SD/docling-core/commit/c6590e83e28626e4a6b62fdbd270cb794bf10918))
+
+## [v2.16.1](https://github.com/DS4SD/docling-core/releases/tag/v2.16.1) - 2025-01-30
+
+### Fix
+
+* Add newline to md formula export ([#142](https://github.com/DS4SD/docling-core/issues/142)) ([`d07a87e`](https://github.com/DS4SD/docling-core/commit/d07a87e1fbc777cd6d01c7646d714a44a69bc123))
+
+## [v2.16.0](https://github.com/DS4SD/docling-core/releases/tag/v2.16.0) - 2025-01-29
+
+### Feature
+
+* Escape underscores that are within latex equations ([#137](https://github.com/DS4SD/docling-core/issues/137)) ([`0d5cd11`](https://github.com/DS4SD/docling-core/commit/0d5cd11326d8521360add6ffaa3de845bf72abe2))
+* Add escaping_underscores option to markdown export ([#135](https://github.com/DS4SD/docling-core/issues/135)) ([`c9739b2`](https://github.com/DS4SD/docling-core/commit/c9739b2c6cf0686747fbda5331e1fd1a174bb91f))
+* Added the geometric operations to BoundingBox ([#136](https://github.com/DS4SD/docling-core/issues/136)) ([`f02bbae`](https://github.com/DS4SD/docling-core/commit/f02bbaea47ebbfe98265f530b0b62dd2a6ac1ecd))
+
 ## [v2.15.1](https://github.com/DS4SD/docling-core/releases/tag/v2.15.1) - 2025-01-21
 
 ### Fix

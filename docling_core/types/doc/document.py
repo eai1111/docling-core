@@ -3,7 +3,9 @@
 import base64
 import copy
 import hashlib
+import html
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -15,7 +17,11 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Final, List, Literal, Optional, Tuple, Union
 from urllib.parse import quote, unquote
+from xml.etree.cElementTree import SubElement, tostring
+from xml.sax.saxutils import unescape
 
+import latex2mathml.converter
+import latex2mathml.exceptions
 import pandas as pd
 import yaml
 from PIL import Image as PILImage
@@ -38,7 +44,13 @@ from docling_core.types.doc import BoundingBox, Size
 from docling_core.types.doc.base import ImageRefMode
 from docling_core.types.doc.labels import CodeLanguageLabel, DocItemLabel, GroupLabel
 from docling_core.types.doc.tokens import DocumentToken, TableToken
-from docling_core.types.doc.utils import relative_path
+from docling_core.types.doc.utils import (
+    get_html_tag_with_text_direction,
+    get_text_direction,
+    relative_path,
+)
+
+_logger = logging.getLogger(__name__)
 
 Uint64 = typing.Annotated[int, Field(ge=0, le=(2**64 - 1))]
 LevelNumber = typing.Annotated[int, Field(ge=1, le=100)]
@@ -585,7 +597,8 @@ class DocItem(
         crop_bbox = (
             self.prov[0]
             .bbox.to_top_left_origin(page_height=page.size.height)
-            .scaled(scale=page_image.height / page.size.height)
+            .scale_to_size(old_size=page.size, new_size=page.image.size)
+            # .scaled(scale=page_image.height / page.size.height)
         )
         return page_image.crop(crop_bbox.as_tuple())
 
@@ -857,7 +870,9 @@ class PictureItem(FloatingItem):
 
         caption_text = ""
         if len(text) > 0:
-            caption_text = f"<figcaption>{text}</figcaption>"
+            caption_text = get_html_tag_with_text_direction(
+                html_tag="figcaption", text=text
+            )
 
         default_response = f"<figure>{caption_text}</figure>"
 
@@ -1044,7 +1059,7 @@ class TableItem(FloatingItem):
 
         text = ""
         if doc is not None and add_caption and len(self.captions):
-            text = self.caption_text(doc)
+            text = html.escape(self.caption_text(doc))
 
         if len(self.data.table_cells) == 0:
             return ""
@@ -1070,7 +1085,7 @@ class TableItem(FloatingItem):
                 if colstart != j:
                     continue
 
-                content = cell.text.strip()
+                content = html.escape(cell.text.strip())
                 celltag = "td"
                 if cell.column_header:
                     celltag = "th"
@@ -1081,15 +1096,28 @@ class TableItem(FloatingItem):
                 if colspan > 1:
                     opening_tag += f' colspan="{colspan}"'
 
+                text_dir = get_text_direction(content)
+                if text_dir == "rtl":
+                    opening_tag += f' dir="{dir}"'
+
                 body += f"<{opening_tag}>{content}</{celltag}>"
             body += "</tr>"
 
+        # dir = get_text_direction(text)
+
         if len(text) > 0 and len(body) > 0:
-            body = f"<table><caption>{text}</caption><tbody>{body}</tbody></table>"
+            caption_text = get_html_tag_with_text_direction(
+                html_tag="caption", text=text
+            )
+            body = f"<table>{caption_text}<tbody>{body}</tbody></table>"
+
         elif len(text) == 0 and len(body) > 0:
             body = f"<table><tbody>{body}</tbody></table>"
         elif len(text) > 0 and len(body) == 0:
-            body = f"<table><caption>{text}</caption></table>"
+            caption_text = get_html_tag_with_text_direction(
+                html_tag="caption", text=text
+            )
+            body = f"<table>{caption_text}</table>"
         else:
             body = "<table></table>"
 
@@ -1384,6 +1412,20 @@ class DoclingDocument(BaseModel):
     }
     table tr:nth-child(even) td{
     background-color: LightGray;
+    }
+    math annotation {
+    display: none;
+    }
+    .formula-not-decoded {
+    background: repeating-linear-gradient(
+    45deg, /* Angle of the stripes */
+    LightGray, /* First color */
+    LightGray 10px, /* Length of the first color */
+    White 10px, /* Second color */
+    White 20px /* Length of the second color */
+    );
+    margin: 0;
+    text-align: center;
     }
     </style>
     </head>"""
@@ -1996,6 +2038,7 @@ class DoclingDocument(BaseModel):
         to_element: int = sys.maxsize,
         labels: set[DocItemLabel] = DEFAULT_EXPORT_LABELS,
         strict_text: bool = False,
+        escaping_underscores: bool = True,
         image_placeholder: str = "<!-- image -->",
         image_mode: ImageRefMode = ImageRefMode.PLACEHOLDER,
         indent: int = 4,
@@ -2018,6 +2061,7 @@ class DoclingDocument(BaseModel):
             to_element=to_element,
             labels=labels,
             strict_text=strict_text,
+            escaping_underscores=escaping_underscores,
             image_placeholder=image_placeholder,
             image_mode=image_mode,
             indent=indent,
@@ -2035,6 +2079,7 @@ class DoclingDocument(BaseModel):
         to_element: int = sys.maxsize,
         labels: set[DocItemLabel] = DEFAULT_EXPORT_LABELS,
         strict_text: bool = False,
+        escaping_underscores: bool = True,
         image_placeholder: str = "<!-- image -->",
         image_mode: ImageRefMode = ImageRefMode.PLACEHOLDER,
         indent: int = 4,
@@ -2060,6 +2105,9 @@ class DoclingDocument(BaseModel):
         :param strict_text: bool: Whether to only include the text content
             of the document. (Default value = False).
         :type strict_text: bool = False
+        :param escaping_underscores: bool: Whether to escape underscores in the
+            text content of the document. (Default value = True).
+        :type escaping_underscores: bool = True
         :param image_placeholder: The placeholder to include to position
             images in the markdown. (Default value = "\<!-- image --\>").
         :type image_placeholder: str = "<!-- image -->"
@@ -2076,6 +2124,46 @@ class DoclingDocument(BaseModel):
         list_nesting_level = 0  # Track the current list nesting level
         previous_level = 0  # Track the previous item's level
         in_list = False  # Track if we're currently processing list items
+
+        # Our export markdown doesn't contain any emphasis styling:
+        # Bold, Italic, or Bold-Italic
+        # Hence, any underscore that we print into Markdown is coming from document text
+        # That means we need to escape it, to properly reflect content in the markdown
+        # However, we need to preserve underscores in image URLs
+        # to maintain their validity
+        # For example: ![image](path/to_image.png) should remain unchanged
+        def _escape_underscores(text):
+            """Escape underscores but leave them intact in the URL.."""
+            # Firstly, identify all the URL patterns.
+            url_pattern = r"!\[.*?\]\((.*?)\)"
+            # Matches both inline ($...$) and block ($$...$$) LaTeX equations:
+            latex_pattern = r"\$\$?(?:\\.|[^$\\])*\$\$?"
+            combined_pattern = f"({url_pattern})|({latex_pattern})"
+
+            parts = []
+            last_end = 0
+
+            for match in re.finditer(combined_pattern, text):
+                # Text to add before the URL (needs to be escaped)
+                before_url = text[last_end : match.start()]
+                parts.append(re.sub(r"(?<!\\)_", r"\_", before_url))
+
+                # Add the full URL part (do not escape)
+                parts.append(match.group(0))
+                last_end = match.end()
+
+            # Add the final part of the text (which needs to be escaped)
+            if last_end < len(text):
+                parts.append(re.sub(r"(?<!\\)_", r"\_", text[last_end:]))
+
+            return "".join(parts)
+
+        def _append_text(text: str, do_escape_html=True, do_escape_underscores=True):
+            if do_escape_underscores and escaping_underscores:
+                text = _escape_underscores(text)
+            if do_escape_html:
+                text = html.escape(text, quote=False)
+            mdtexts.append(text)
 
         for ix, (item, level) in enumerate(
             self.iterate_items(self.body, with_groups=True, page_no=page_no)
@@ -2125,7 +2213,7 @@ class DoclingDocument(BaseModel):
                 in_list = False
                 marker = "" if strict_text else "#"
                 text = f"{marker} {item.text}"
-                mdtexts.append(text.strip() + "\n")
+                _append_text(text.strip() + "\n")
 
             elif (
                 isinstance(item, TextItem)
@@ -2138,12 +2226,12 @@ class DoclingDocument(BaseModel):
                     if len(marker) < 2:
                         marker = "##"
                 text = f"{marker} {item.text}\n"
-                mdtexts.append(text.strip() + "\n")
+                _append_text(text.strip() + "\n")
 
             elif isinstance(item, CodeItem) and item.label in labels:
                 in_list = False
                 text = f"```\n{item.text}\n```\n"
-                mdtexts.append(text)
+                _append_text(text, do_escape_underscores=False, do_escape_html=False)
 
             elif isinstance(item, ListItem) and item.label in [DocItemLabel.LIST_ITEM]:
                 in_list = True
@@ -2160,26 +2248,42 @@ class DoclingDocument(BaseModel):
                     marker = "-"  # Markdown needs only dash as item marker.
 
                 text = f"{list_indent}{marker} {item.text}"
-                mdtexts.append(text)
+                _append_text(text)
+
+            elif isinstance(item, TextItem) and item.label in [DocItemLabel.FORMULA]:
+                in_list = False
+                if item.text != "":
+                    _append_text(
+                        f"$${item.text}$$\n",
+                        do_escape_underscores=False,
+                        do_escape_html=False,
+                    )
+                elif item.orig != "":
+                    _append_text(
+                        "<!-- formula-not-decoded -->\n",
+                        do_escape_underscores=False,
+                        do_escape_html=False,
+                    )
 
             elif isinstance(item, TextItem) and item.label in labels:
                 in_list = False
                 if len(item.text) and text_width > 0:
+                    text = item.text
                     wrapped_text = textwrap.fill(text, width=text_width)
-                    mdtexts.append(wrapped_text + "\n")
+                    _append_text(wrapped_text + "\n")
                 elif len(item.text):
                     text = f"{item.text}\n"
-                    mdtexts.append(text)
+                    _append_text(text)
 
             elif isinstance(item, TableItem) and not strict_text:
                 in_list = False
-                mdtexts.append(item.caption_text(self))
+                _append_text(item.caption_text(self))
                 md_table = item.export_to_markdown()
-                mdtexts.append("\n" + md_table + "\n")
+                _append_text("\n" + md_table + "\n")
 
             elif isinstance(item, PictureItem) and not strict_text:
                 in_list = False
-                mdtexts.append(item.caption_text(self))
+                _append_text(item.caption_text(self))
 
                 line = item.export_to_markdown(
                     doc=self,
@@ -2187,48 +2291,17 @@ class DoclingDocument(BaseModel):
                     image_mode=image_mode,
                 )
 
-                mdtexts.append(line)
+                _append_text(line, do_escape_html=False, do_escape_underscores=False)
 
             elif isinstance(item, DocItem) and item.label in labels:
                 in_list = False
-                text = "<missing-text>"
-                mdtexts.append(text)
+                text = "<!-- missing-text -->"
+                _append_text(text, do_escape_html=False, do_escape_underscores=False)
 
         mdtext = (delim.join(mdtexts)).strip()
         mdtext = re.sub(
             r"\n\n\n+", "\n\n", mdtext
         )  # remove cases of double or more empty lines.
-
-        # Our export markdown doesn't contain any emphasis styling:
-        # Bold, Italic, or Bold-Italic
-        # Hence, any underscore that we print into Markdown is coming from document text
-        # That means we need to escape it, to properly reflect content in the markdown
-        # However, we need to preserve underscores in image URLs
-        # to maintain their validity
-        # For example: ![image](path/to_image.png) should remain unchanged
-        def escape_underscores(text):
-            """Escape underscores but leave them intact in the URL.."""
-            # Firstly, identify all the URL patterns.
-            url_pattern = r"!\[.*?\]\((.*?)\)"
-            parts = []
-            last_end = 0
-
-            for match in re.finditer(url_pattern, text):
-                # Text to add before the URL (needs to be escaped)
-                before_url = text[last_end : match.start()]
-                parts.append(re.sub(r"(?<!\\)_", r"\_", before_url))
-
-                # Add the full URL part (do not escape)
-                parts.append(match.group(0))
-                last_end = match.end()
-
-            # Add the final part of the text (which needs to be escaped)
-            if last_end < len(text):
-                parts.append(re.sub(r"(?<!\\)_", r"\_", text[last_end:]))
-
-            return "".join(parts)
-
-        mdtext = escape_underscores(mdtext)
 
         return mdtext
 
@@ -2246,6 +2319,7 @@ class DoclingDocument(BaseModel):
             to_element,
             labels,
             strict_text=True,
+            escaping_underscores=False,
             image_placeholder="",
         )
 
@@ -2257,6 +2331,7 @@ class DoclingDocument(BaseModel):
         to_element: int = sys.maxsize,
         labels: set[DocItemLabel] = DEFAULT_EXPORT_LABELS,
         image_mode: ImageRefMode = ImageRefMode.PLACEHOLDER,
+        formula_to_mathml: bool = True,
         page_no: Optional[int] = None,
         html_lang: str = "en",
         html_head: str = _HTML_DEFAULT_HEAD,
@@ -2276,6 +2351,7 @@ class DoclingDocument(BaseModel):
             to_element=to_element,
             labels=labels,
             image_mode=image_mode,
+            formula_to_mathml=formula_to_mathml,
             page_no=page_no,
             html_lang=html_lang,
             html_head=html_head,
@@ -2322,6 +2398,7 @@ class DoclingDocument(BaseModel):
         to_element: int = sys.maxsize,
         labels: set[DocItemLabel] = DEFAULT_EXPORT_LABELS,
         image_mode: ImageRefMode = ImageRefMode.PLACEHOLDER,
+        formula_to_mathml: bool = True,
         page_no: Optional[int] = None,
         html_lang: str = "en",
         html_head: str = _HTML_DEFAULT_HEAD,
@@ -2356,6 +2433,15 @@ class DoclingDocument(BaseModel):
 
         in_ordered_list: List[bool] = []  # False
 
+        def _prepare_tag_content(
+            text: str, do_escape_html=True, do_replace_newline=True
+        ) -> str:
+            if do_escape_html:
+                text = html.escape(text, quote=False)
+            if do_replace_newline:
+                text = text.replace("\n", "<br>")
+            return text
+
         for ix, (item, curr_level) in enumerate(
             self.iterate_items(self.body, with_groups=True, page_no=page_no)
         ):
@@ -2386,7 +2472,7 @@ class DoclingDocument(BaseModel):
             ]:
 
                 text = "<ol>"
-                html_texts.append(text.strip())
+                html_texts.append(text)
 
                 # Increment list nesting level when entering a new list
                 in_ordered_list.append(True)
@@ -2396,7 +2482,7 @@ class DoclingDocument(BaseModel):
             ]:
 
                 text = "<ul>"
-                html_texts.append(text.strip())
+                html_texts.append(text)
 
                 # Increment list nesting level when entering a new list
                 in_ordered_list.append(False)
@@ -2405,55 +2491,105 @@ class DoclingDocument(BaseModel):
                 continue
 
             elif isinstance(item, TextItem) and item.label in [DocItemLabel.TITLE]:
+                text_inner = _prepare_tag_content(item.text)
+                text = get_html_tag_with_text_direction(html_tag="h1", text=text_inner)
 
-                text = f"<h1>{item.text}</h1>"
-                html_texts.append(text.strip())
+                html_texts.append(text)
 
             elif isinstance(item, SectionHeaderItem):
 
-                section_level: int = item.level + 1
+                section_level: int = min(item.level + 1, 6)
 
-                text = f"<h{(section_level)}>{item.text}</h{(section_level)}>"
-                html_texts.append(text.strip())
-
-            elif isinstance(item, TextItem) and item.label in [
-                DocItemLabel.SECTION_HEADER
-            ]:
-
-                section_level = curr_level
-
-                if section_level <= 1:
-                    section_level = 2
-
-                if section_level >= 6:
-                    section_level = 6
-
-                text = f"<h{section_level}>{item.text}</h{section_level}>"
-                html_texts.append(text.strip())
-
-            elif isinstance(item, TextItem) and item.label in [DocItemLabel.CODE]:
-
-                text = f"<pre>{item.text}</pre>"
+                text = get_html_tag_with_text_direction(
+                    html_tag=f"h{section_level}", text=_prepare_tag_content(item.text)
+                )
                 html_texts.append(text)
 
-            elif isinstance(item, ListItem):
+            elif isinstance(item, TextItem) and item.label in [DocItemLabel.FORMULA]:
 
-                text = f"<li>{item.text}</li>"
+                math_formula = _prepare_tag_content(
+                    item.text, do_escape_html=False, do_replace_newline=False
+                )
+                text = ""
+
+                def _image_fallback(item: TextItem):
+                    item_image = item.get_image(doc=self)
+                    if item_image is not None:
+                        img_ref = ImageRef.from_pil(item_image, dpi=72)
+                        return (
+                            "<figure>"
+                            f'<img src="{img_ref.uri}" alt="{item.orig}" />'
+                            "</figure>"
+                        )
+
+                # If the formula is not processed correcty, use its image
+                if (
+                    item.text == ""
+                    and item.orig != ""
+                    and image_mode == ImageRefMode.EMBEDDED
+                    and len(item.prov) > 0
+                ):
+                    text = _image_fallback(item)
+
+                # Building a math equation in MathML format
+                # ref https://www.w3.org/TR/wai-aria-1.1/#math
+                elif formula_to_mathml:
+                    try:
+                        mathml_element = latex2mathml.converter.convert_to_element(
+                            math_formula, display="block"
+                        )
+                        annotation = SubElement(
+                            mathml_element, "annotation", dict(encoding="TeX")
+                        )
+                        annotation.text = math_formula
+                        mathml = unescape(tostring(mathml_element, encoding="unicode"))
+                        text = f"<div>{mathml}</div>"
+                    except Exception as err:
+                        _logger.warning(
+                            "Malformed formula cannot be rendered. "
+                            f"Error {err.__class__.__name__}, formula={math_formula}"
+                        )
+                        if image_mode == ImageRefMode.EMBEDDED and len(item.prov) > 0:
+                            text = _image_fallback(item)
+                        else:
+                            text = f"<pre>{math_formula}</pre>"
+
+                elif math_formula != "":
+                    text = f"<pre>{math_formula}</pre>"
+
+                if text != "":
+                    html_texts.append(text)
+                else:
+                    html_texts.append(
+                        '<div class="formula-not-decoded">Formula not decoded</div>'
+                    )
+
+            elif isinstance(item, ListItem):
+                text = get_html_tag_with_text_direction(
+                    html_tag="li", text=_prepare_tag_content(item.text)
+                )
                 html_texts.append(text)
 
             elif isinstance(item, TextItem) and item.label in [DocItemLabel.LIST_ITEM]:
-
-                text = f"<li>{item.text}</li>"
+                text = get_html_tag_with_text_direction(
+                    html_tag="li", text=_prepare_tag_content(item.text)
+                )
                 html_texts.append(text)
 
-            elif isinstance(item, CodeItem) and item.label in labels:
-                text = f"<pre><code>{item.text}</code></pre>"
-                html_texts.append(text.strip())
+            elif isinstance(item, CodeItem):
+                code_text = _prepare_tag_content(
+                    item.text, do_escape_html=False, do_replace_newline=False
+                )
+                text = f"<pre><code>{code_text}</code></pre>"
+                html_texts.append(text)
 
-            elif isinstance(item, TextItem) and item.label in labels:
+            elif isinstance(item, TextItem):
 
-                text = f"<p>{item.text}</p>"
-                html_texts.append(text.strip())
+                text = get_html_tag_with_text_direction(
+                    html_tag="p", text=_prepare_tag_content(item.text)
+                )
+                html_texts.append(text)
+
             elif isinstance(item, TableItem):
 
                 text = item.export_to_html(doc=self, add_caption=True)
@@ -2474,8 +2610,7 @@ class DoclingDocument(BaseModel):
 
         lines = []
         lines.extend(head_lines)
-        for i, line in enumerate(html_texts):
-            lines.append(line.replace("\n", "<br>"))
+        lines.extend(html_texts)
 
         delim = "\n"
         html_text = (delim.join(lines)).strip()
