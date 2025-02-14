@@ -14,6 +14,7 @@ from docling_core.types.doc.base import BoundingBox, CoordOrigin, ImageRefMode, 
 from docling_core.types.doc.document import (  # BoundingBox,
     CURRENT_VERSION,
     CodeItem,
+    ContentLayer,
     DocItem,
     DoclingDocument,
     DocumentOrigin,
@@ -195,12 +196,14 @@ def test_docitems():
             f"./test/data/docling_document/unit/{name}.yaml", "r", encoding="utf-8"
         ) as fr:
             gold = fr.read()
-        return gold
+        return yaml.safe_load(gold)
 
     def verify(dc, obj):
         pred = serialise(obj).strip()
+        pred = yaml.safe_load(pred)
+
         # print(f"\t{dc.__name__}:\n {pred}")
-        gold = read(dc.__name__).strip()
+        gold = read(dc.__name__)
 
         assert pred == gold, f"pred!=gold for {dc.__name__}"
 
@@ -374,7 +377,6 @@ def _test_serialize_and_reload(doc):
 
 
 def _verify_regression_test(pred: str, filename: str, ext: str):
-
     if os.path.exists(filename + f".{ext}") and not GENERATE:
         with open(filename + f".{ext}", "r", encoding="utf-8") as fr:
             gt_true = fr.read()
@@ -386,15 +388,15 @@ def _verify_regression_test(pred: str, filename: str, ext: str):
 
 
 def _test_export_methods(doc: DoclingDocument, filename: str):
-    ### Iterate all elements
+    # Iterate all elements
     et_pred = doc.export_to_element_tree()
     _verify_regression_test(et_pred, filename=filename, ext="et")
 
-    ## Export stuff
+    # Export stuff
     md_pred = doc.export_to_markdown()
     _verify_regression_test(md_pred, filename=filename, ext="md")
 
-    # Test HTML export ...
+    # Test sHTML export ...
     html_pred = doc.export_to_html()
     _verify_regression_test(html_pred, filename=filename, ext="html")
 
@@ -623,6 +625,13 @@ def test_image_ref():
     image = ImageRef.model_validate(data_path)
     assert isinstance(image.uri, Path)
     assert image.uri.name == "image.png"
+
+
+def test_upgrade_content_layer_from_1_0_0():
+    doc = DoclingDocument.load_from_json("test/data/doc/2206.01062-1.0.0.json")
+
+    assert doc.version == CURRENT_VERSION
+    assert doc.texts[0].content_layer == ContentLayer.FURNITURE
 
 
 def test_version_doc():
