@@ -75,6 +75,7 @@ class GroupLabel(str, Enum):
     FORM_AREA = "form_area"
     KEY_VALUE_AREA = "key_value_area"
     COMMENT_SECTION = "comment_section"
+    INLINE = "inline"
 
     def __str__(self):
         """Get string value."""
@@ -138,6 +139,29 @@ class TableCellLabel(str, Enum):
     def __str__(self):
         """Get string value."""
         return str(self.value)
+
+
+class GraphCellLabel(str, Enum):
+    """GraphCellLabel."""
+
+    UNSPECIFIED = "unspecified"
+
+    KEY = "key"
+    VALUE = "value"
+
+    CHECKBOX = "checkbox"
+
+
+class GraphLinkLabel(str, Enum):
+    """GraphLinkLabel."""
+
+    UNSPECIFIED = "unspecified"
+
+    TO_VALUE = "to_value"
+    TO_KEY = "to_key"
+
+    TO_PARENT = "to_parent"
+    TO_CHILD = "to_child"
 
 
 class CodeLanguageLabel(str, Enum):

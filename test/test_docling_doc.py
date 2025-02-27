@@ -13,12 +13,17 @@ from pydantic import AnyUrl, ValidationError
 from docling_core.types.doc.base import BoundingBox, CoordOrigin, ImageRefMode, Size
 from docling_core.types.doc.document import (  # BoundingBox,
     CURRENT_VERSION,
+    DEFAULT_EXPORT_LABELS,
     CodeItem,
     ContentLayer,
     DocItem,
     DoclingDocument,
     DocumentOrigin,
     FloatingItem,
+    FormItem,
+    GraphCell,
+    GraphData,
+    GraphLink,
     ImageRef,
     KeyValueItem,
     ListItem,
@@ -31,7 +36,12 @@ from docling_core.types.doc.document import (  # BoundingBox,
     TableItem,
     TextItem,
 )
-from docling_core.types.doc.labels import DocItemLabel, GroupLabel
+from docling_core.types.doc.labels import (
+    DocItemLabel,
+    GraphCellLabel,
+    GraphLinkLabel,
+    GroupLabel,
+)
 
 GENERATE = False
 
@@ -200,6 +210,10 @@ def test_docitems():
 
     def verify(dc, obj):
         pred = serialise(obj).strip()
+
+        if dc is KeyValueItem or dc is FormItem:
+            write(dc.__name__, pred)
+
         pred = yaml.safe_load(pred)
 
         # print(f"\t{dc.__name__}:\n {pred}")
@@ -236,8 +250,73 @@ def test_docitems():
             verify(dc, obj)
 
         elif dc is KeyValueItem:
+
+            graph = GraphData(
+                cells=[
+                    GraphCell(
+                        label=GraphCellLabel.KEY,
+                        cell_id=0,
+                        text="number",
+                        orig="#",
+                    ),
+                    GraphCell(
+                        label=GraphCellLabel.VALUE,
+                        cell_id=1,
+                        text="1",
+                        orig="1",
+                    ),
+                ],
+                links=[
+                    GraphLink(
+                        label=GraphLinkLabel.TO_VALUE,
+                        source_cell_id=0,
+                        target_cell_id=1,
+                    ),
+                    GraphLink(
+                        label=GraphLinkLabel.TO_KEY, source_cell_id=1, target_cell_id=0
+                    ),
+                ],
+            )
+
             obj = dc(
                 label=DocItemLabel.KEY_VALUE_REGION,
+                graph=graph,
+                self_ref="#",
+            )
+            verify(dc, obj)
+
+        elif dc is FormItem:
+
+            graph = GraphData(
+                cells=[
+                    GraphCell(
+                        label=GraphCellLabel.KEY,
+                        cell_id=0,
+                        text="number",
+                        orig="#",
+                    ),
+                    GraphCell(
+                        label=GraphCellLabel.VALUE,
+                        cell_id=1,
+                        text="1",
+                        orig="1",
+                    ),
+                ],
+                links=[
+                    GraphLink(
+                        label=GraphLinkLabel.TO_VALUE,
+                        source_cell_id=0,
+                        target_cell_id=1,
+                    ),
+                    GraphLink(
+                        label=GraphLinkLabel.TO_KEY, source_cell_id=1, target_cell_id=0
+                    ),
+                ],
+            )
+
+            obj = dc(
+                label=DocItemLabel.FORM,
+                graph=graph,
                 self_ref="#",
             )
             verify(dc, obj)
@@ -272,6 +351,8 @@ def test_docitems():
                 code_language="Python",
             )
             verify(dc, obj)
+        elif dc is GraphData:  # we skip this on purpose
+            continue
         else:
             raise RuntimeError(f"New derived class detected {dc.__name__}")
 
@@ -379,12 +460,12 @@ def _test_serialize_and_reload(doc):
 def _verify_regression_test(pred: str, filename: str, ext: str):
     if os.path.exists(filename + f".{ext}") and not GENERATE:
         with open(filename + f".{ext}", "r", encoding="utf-8") as fr:
-            gt_true = fr.read()
+            gt_true = fr.read().rstrip()
 
         assert gt_true == pred, f"Does not pass regression-test for {filename}.{ext}"
     else:
         with open(filename + f".{ext}", "w", encoding="utf-8") as fw:
-            fw.write(pred)
+            fw.write(f"{pred}\n")
 
 
 def _test_export_methods(doc: DoclingDocument, filename: str):
@@ -393,7 +474,13 @@ def _test_export_methods(doc: DoclingDocument, filename: str):
     _verify_regression_test(et_pred, filename=filename, ext="et")
 
     # Export stuff
-    md_pred = doc.export_to_markdown()
+    labels = DEFAULT_EXPORT_LABELS.union(
+        {
+            DocItemLabel.KEY_VALUE_REGION,
+            DocItemLabel.FORM,
+        }
+    )
+    md_pred = doc.export_to_markdown(labels=labels)
     _verify_regression_test(md_pred, filename=filename, ext="md")
 
     # Test sHTML export ...
@@ -468,21 +555,28 @@ def _construct_doc() -> DoclingDocument:
         text="list item 1",
     )
     doc.add_list_item(parent=mylist_level_1, text="list item 2")
-    doc.add_list_item(
+    li3 = doc.add_list_item(
         parent=mylist_level_1,
         text="list item 3",
     )
 
-    mylist_level_2 = doc.add_group(parent=mylist_level_1, label=GroupLabel.ORDERED_LIST)
+    mylist_level_2 = doc.add_group(parent=li3, label=GroupLabel.ORDERED_LIST)
 
     doc.add_list_item(
         parent=mylist_level_2,
         text="list item 3.a",
     )
     doc.add_list_item(parent=mylist_level_2, text="list item 3.b")
-    doc.add_list_item(
+    li3c = doc.add_list_item(
         parent=mylist_level_2,
         text="list item 3.c",
+    )
+
+    mylist_level_3 = doc.add_group(parent=li3c, label=GroupLabel.ORDERED_LIST)
+
+    doc.add_list_item(
+        parent=mylist_level_3,
+        text="list item 3.c.i",
     )
 
     doc.add_list_item(
@@ -573,8 +667,19 @@ def _construct_doc() -> DoclingDocument:
     fig2_image = PILImage.new("RGB", size, "black")
 
     # Draw a red disk touching the borders
-    draw = ImageDraw.Draw(fig2_image)
-    draw.ellipse((0, 0, size[0] - 1, size[1] - 1), fill="red")
+    # draw = ImageDraw.Draw(fig2_image)
+    # draw.ellipse((0, 0, size[0] - 1, size[1] - 1), fill="red")
+
+    # Create a drawing object
+    ImageDraw.Draw(fig2_image)
+
+    # Define the coordinates of the red square (x1, y1, x2, y2)
+    square_size = 20  # Adjust as needed
+    x1, y1 = 22, 22  # Adjust position
+    x2, y2 = x1 + square_size, y1 + square_size
+
+    # Draw the red square
+    # draw.rectangle([x1, y1, x2, y2], fill="red")
 
     fig_caption_2 = doc.add_text(
         label=DocItemLabel.CAPTION, text="This is the caption of figure 2."
@@ -582,6 +687,81 @@ def _construct_doc() -> DoclingDocument:
     fig2_item = doc.add_picture(
         image=ImageRef.from_pil(image=fig2_image, dpi=72), caption=fig_caption_2
     )
+
+    g1 = doc.add_group(label=GroupLabel.LIST, parent=None)
+    gn = doc.add_group(label=GroupLabel.LIST, parent=g1)
+    doc.add_list_item(text="subitem of list", parent=gn)
+    doc.add_list_item(text="item 1 of list", parent=g1)
+    doc.add_list_item(text="item 2 of list", parent=g1)
+
+    g2 = doc.add_group(label=GroupLabel.LIST, parent=None)
+    doc.add_list_item(text="item 1 of neighboring list", parent=g2)
+    nli2 = doc.add_list_item(text="item 2 of neighboring list", parent=g2)
+
+    g2_subgroup = doc.add_group(label=GroupLabel.LIST, parent=nli2)
+    doc.add_list_item(text="item 1 of sub list", parent=g2_subgroup)
+
+    inline1 = doc.add_group(label=GroupLabel.INLINE, parent=g2_subgroup)
+    doc.add_text(
+        label=DocItemLabel.PARAGRAPH,
+        text="Here a code snippet:",
+        parent=inline1,
+    )
+    doc.add_code(text='print("Hello world")', parent=inline1)
+    doc.add_text(
+        label=DocItemLabel.PARAGRAPH, text="(to be displayed inline)", parent=inline1
+    )
+
+    inline2 = doc.add_group(label=GroupLabel.INLINE, parent=g2_subgroup)
+    doc.add_text(
+        label=DocItemLabel.PARAGRAPH,
+        text="Here a formula:",
+        parent=inline2,
+    )
+    doc.add_text(label=DocItemLabel.FORMULA, text="E=mc^2", parent=inline2)
+    doc.add_text(
+        label=DocItemLabel.PARAGRAPH, text="(to be displayed inline)", parent=inline2
+    )
+
+    doc.add_text(label=DocItemLabel.PARAGRAPH, text="Here a code block:", parent=None)
+    doc.add_code(text='print("Hello world")', parent=None)
+
+    doc.add_text(
+        label=DocItemLabel.PARAGRAPH, text="Here a formula block:", parent=None
+    )
+    doc.add_text(label=DocItemLabel.FORMULA, text="E=mc^2", parent=None)
+
+    graph = GraphData(
+        cells=[
+            GraphCell(
+                label=GraphCellLabel.KEY,
+                cell_id=0,
+                text="number",
+                orig="#",
+            ),
+            GraphCell(
+                label=GraphCellLabel.VALUE,
+                cell_id=1,
+                text="1",
+                orig="1",
+            ),
+        ],
+        links=[
+            GraphLink(
+                label=GraphLinkLabel.TO_VALUE,
+                source_cell_id=0,
+                target_cell_id=1,
+            ),
+            GraphLink(label=GraphLinkLabel.TO_KEY, source_cell_id=1, target_cell_id=0),
+        ],
+    )
+
+    doc.add_key_values(graph=graph)
+
+    doc.add_form(graph=graph)
+
+    doc.add_text(label=DocItemLabel.PARAGRAPH, text="The end.", parent=None)
+
     return doc
 
 
@@ -682,6 +862,25 @@ def test_formula_mathml():
     )
 
     assert doc_html == gt_html
+
+
+def test_formula_with_missing_fallback():
+    doc = DoclingDocument(name="Dummy")
+    bbox = BoundingBox.from_tuple((1, 2, 3, 4), origin=CoordOrigin.BOTTOMLEFT)
+    prov = ProvenanceItem(page_no=1, bbox=bbox, charspan=(0, 2))
+    doc.add_text(label=DocItemLabel.FORMULA, text="", orig="(II.24) 2 Imar", prov=prov)
+
+    actual = doc.export_to_html(
+        formula_to_mathml=True, html_head="", image_mode=ImageRefMode.EMBEDDED
+    )
+
+    expected = """<!DOCTYPE html>
+<html lang="en">
+
+<div class="formula-not-decoded">Formula not decoded</div>
+</html>"""
+
+    assert actual == expected
 
 
 def test_docitem_get_image():

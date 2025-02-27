@@ -43,7 +43,13 @@ from docling_core.search.package import VERSION_PATTERN
 from docling_core.types.base import _JSON_POINTER_REGEX
 from docling_core.types.doc import BoundingBox, Size
 from docling_core.types.doc.base import ImageRefMode
-from docling_core.types.doc.labels import CodeLanguageLabel, DocItemLabel, GroupLabel
+from docling_core.types.doc.labels import (
+    CodeLanguageLabel,
+    DocItemLabel,
+    GraphCellLabel,
+    GraphLinkLabel,
+    GroupLabel,
+)
 from docling_core.types.doc.tokens import DocumentToken, TableToken
 from docling_core.types.doc.utils import (
     get_html_tag_with_text_direction,
@@ -55,7 +61,7 @@ _logger = logging.getLogger(__name__)
 
 Uint64 = typing.Annotated[int, Field(ge=0, le=(2**64 - 1))]
 LevelNumber = typing.Annotated[int, Field(ge=1, le=100)]
-CURRENT_VERSION: Final = "1.1.0"
+CURRENT_VERSION: Final = "1.2.0"
 
 DEFAULT_EXPORT_LABELS = {
     DocItemLabel.TITLE,
@@ -794,7 +800,7 @@ class CodeItem(FloatingItem, TextItem):
         :param add_content: bool:  (Default value = True)
 
         """
-        body = f"{DocumentToken.BEG_CODE.value}{new_line}"
+        body = f"<{self.label.value}{new_line}"
 
         if add_location:
             body += self.get_location_tokens(
@@ -807,7 +813,7 @@ class CodeItem(FloatingItem, TextItem):
         if add_content and self.text is not None:
             body += f"<_{self.code_language.value}_>{self.text}{new_line}"
 
-        body += f"{DocumentToken.END_CODE.value}\n"
+        body += f"</{self.label.value}\n"
 
         return body
 
@@ -855,11 +861,11 @@ class PictureItem(FloatingItem):
         image_placeholder: str = "<!-- image -->",
     ) -> str:
         """Export picture to Markdown format."""
-        default_response = "\n" + image_placeholder + "\n"
+        default_response = image_placeholder
         error_response = (
-            "\n<!-- 🖼️❌ Image not available. "
+            "<!-- 🖼️❌ Image not available. "
             "Please use `PdfPipelineOptions(generate_picture_images=True)`"
-            " --> \n"
+            " -->"
         )
 
         if image_mode == ImageRefMode.PLACEHOLDER:
@@ -873,7 +879,7 @@ class PictureItem(FloatingItem):
                 and isinstance(self.image.uri, AnyUrl)
                 and self.image.uri.scheme == "data"
             ):
-                text = f"\n![Image]({self.image.uri})\n"
+                text = f"![Image]({self.image.uri})"
                 return text
 
             # get the self.image._pil or crop it out of the page-image
@@ -881,7 +887,7 @@ class PictureItem(FloatingItem):
 
             if img is not None:
                 imgb64 = self._image_to_base64(img)
-                text = f"\n![Image](data:image/png;base64,{imgb64})\n"
+                text = f"![Image](data:image/png;base64,{imgb64})"
 
                 return text
             else:
@@ -893,7 +899,7 @@ class PictureItem(FloatingItem):
             ):
                 return default_response
 
-            text = f"\n![Image]({quote(str(self.image.uri))})\n"
+            text = f"![Image]({quote(str(self.image.uri))})"
             return text
 
         else:
@@ -977,8 +983,7 @@ class PictureItem(FloatingItem):
         :param # not used at the moment
 
         """
-        body = f"{DocumentToken.BEG_PICTURE.value}{new_line}"
-
+        body = f"<{self.label.value}>{new_line}"
         if add_location:
             body += self.get_location_tokens(
                 doc=doc,
@@ -1002,7 +1007,7 @@ class PictureItem(FloatingItem):
             text = self.caption_text(doc)
 
             if len(text):
-                body += f"{DocumentToken.BEG_CAPTION.value}"
+                body += f"<{DocItemLabel.CAPTION.value}>"
                 for caption in self.captions:
                     body += caption.resolve(doc).get_location_tokens(
                         doc=doc,
@@ -1011,10 +1016,10 @@ class PictureItem(FloatingItem):
                         ysize=ysize,
                     )
                 body += f"{text.strip()}"
-                body += f"{DocumentToken.END_CAPTION.value}"
+                body += f"</{DocItemLabel.CAPTION.value}>"
                 body += f"{new_line}"
 
-        body += f"{DocumentToken.END_PICTURE.value}\n"
+        body += f"</{self.label.value}>\n"
 
         return body
 
@@ -1102,7 +1107,9 @@ class TableItem(FloatingItem):
         return md_table
 
     def export_to_html(
-        self, doc: Optional["DoclingDocument"] = None, add_caption: bool = True
+        self,
+        doc: Optional["DoclingDocument"] = None,
+        add_caption: bool = True,
     ) -> str:
         """Export the table as html."""
         if doc is None:
@@ -1294,8 +1301,11 @@ class TableItem(FloatingItem):
         :param add_cell_location: bool:  (Default value = True)
         :param add_cell_text: bool:  (Default value = True)
         :param add_caption: bool:  (Default value = True)
+
         """
-        body = f"{DocumentToken.BEG_OTSL.value}{new_line}"
+        otsl_tag = DocumentToken.OTSL.value
+
+        body = f"<{otsl_tag}>{new_line}"
 
         if add_location:
             body += self.get_location_tokens(
@@ -1311,7 +1321,7 @@ class TableItem(FloatingItem):
             text = self.caption_text(doc)
 
             if len(text):
-                body += f"{DocumentToken.BEG_CAPTION.value}"
+                body += f"<{DocItemLabel.CAPTION.value}>"
                 for caption in self.captions:
                     body += caption.resolve(doc).get_location_tokens(
                         doc=doc,
@@ -1320,18 +1330,88 @@ class TableItem(FloatingItem):
                         ysize=ysize,
                     )
                 body += f"{text.strip()}"
-                body += f"{DocumentToken.END_CAPTION.value}"
+                body += f"</{DocItemLabel.CAPTION.value}>"
                 body += f"{new_line}"
 
-        body += f"{DocumentToken.END_OTSL.value}\n"
+        body += f"</{otsl_tag}>\n"
 
         return body
 
 
-class KeyValueItem(DocItem):
+class GraphCell(BaseModel):
+    """GraphCell."""
+
+    label: GraphCellLabel
+
+    cell_id: int
+
+    text: str  # sanitized text
+    orig: str  # text as seen on document
+
+    prov: Optional[ProvenanceItem] = None
+
+    # in case you have a text, table or picture item
+    item_ref: Optional[RefItem] = None
+
+
+class GraphLink(BaseModel):
+    """GraphLink."""
+
+    label: GraphLinkLabel
+
+    source_cell_id: int
+    target_cell_id: int
+
+
+class GraphData(BaseModel):
+    """GraphData."""
+
+    cells: List[GraphCell] = Field(default_factory=list)
+    links: List[GraphLink] = Field(default_factory=list)
+
+    @field_validator("links")
+    @classmethod
+    def validate_links(cls, links, info):
+        """Ensure that each link is valid."""
+        cells = info.data.get("cells", [])
+
+        valid_cell_ids = {cell.cell_id for cell in cells}
+
+        for link in links:
+            if link.source_cell_id not in valid_cell_ids:
+                raise ValueError(
+                    f"Invalid source_cell_id {link.source_cell_id} in GraphLink"
+                )
+            if link.target_cell_id not in valid_cell_ids:
+                raise ValueError(
+                    f"Invalid target_cell_id {link.target_cell_id} in GraphLink"
+                )
+
+        return links
+
+
+class KeyValueItem(FloatingItem):
     """KeyValueItem."""
 
     label: typing.Literal[DocItemLabel.KEY_VALUE_REGION] = DocItemLabel.KEY_VALUE_REGION
+
+    graph: GraphData
+
+    def _export_to_markdown(self) -> str:
+        # TODO add actual implementation
+        return "<!-- missing-key-value-item -->"
+
+
+class FormItem(FloatingItem):
+    """FormItem."""
+
+    label: typing.Literal[DocItemLabel.FORM] = DocItemLabel.FORM
+
+    graph: GraphData
+
+    def _export_to_markdown(self) -> str:
+        # TODO add actual implementation
+        return "<!-- missing-form-item -->"
 
 
 ContentItem = Annotated[
@@ -1444,7 +1524,9 @@ class DoclingDocument(BaseModel):
     )
 
     furniture: Annotated[GroupItem, Field(deprecated=True)] = GroupItem(
-        name="_root_", self_ref="#/furniture", content_layer=ContentLayer.FURNITURE
+        name="_root_",
+        self_ref="#/furniture",
+        content_layer=ContentLayer.FURNITURE,
     )  # List[RefItem] = []
     body: GroupItem = GroupItem(name="_root_", self_ref="#/body")  # List[RefItem] = []
 
@@ -1453,6 +1535,7 @@ class DoclingDocument(BaseModel):
     pictures: List[PictureItem] = []
     tables: List[TableItem] = []
     key_value_items: List[KeyValueItem] = []
+    form_items: List[FormItem] = []
 
     pages: Dict[int, PageItem] = {}  # empty as default
 
@@ -1851,6 +1934,68 @@ class DoclingDocument(BaseModel):
 
         return section_header_item
 
+    def add_key_values(
+        self,
+        graph: GraphData,
+        prov: Optional[ProvenanceItem] = None,
+        parent: Optional[NodeItem] = None,
+    ):
+        """add_key_values.
+
+        :param graph: GraphData:
+        :param prov: Optional[ProvenanceItem]:  (Default value = None)
+        :param parent: Optional[NodeItem]:  (Default value = None)
+        """
+        if not parent:
+            parent = self.body
+
+        key_value_index = len(self.key_value_items)
+        cref = f"#/key_value_items/{key_value_index}"
+
+        kv_item = KeyValueItem(
+            graph=graph,
+            self_ref=cref,
+            parent=parent.get_ref(),
+        )
+        if prov:
+            kv_item.prov.append(prov)
+
+        self.key_value_items.append(kv_item)
+        parent.children.append(RefItem(cref=cref))
+
+        return kv_item
+
+    def add_form(
+        self,
+        graph: GraphData,
+        prov: Optional[ProvenanceItem] = None,
+        parent: Optional[NodeItem] = None,
+    ):
+        """add_form.
+
+        :param graph: GraphData:
+        :param prov: Optional[ProvenanceItem]:  (Default value = None)
+        :param parent: Optional[NodeItem]:  (Default value = None)
+        """
+        if not parent:
+            parent = self.body
+
+        form_index = len(self.form_items)
+        cref = f"#/form_items/{form_index}"
+
+        form_item = FormItem(
+            graph=graph,
+            self_ref=cref,
+            parent=parent.get_ref(),
+        )
+        if prov:
+            form_item.prov.append(prov)
+
+        self.form_items.append(form_item)
+        parent.children.append(RefItem(cref=cref))
+
+        return form_item
+
     def num_pages(self):
         """num_pages."""
         return len(self.pages.values())
@@ -2009,7 +2154,8 @@ class DoclingDocument(BaseModel):
                             img.save(loc_path)
                             if reference_path is not None:
                                 obj_path = relative_path(
-                                    reference_path.resolve(), loc_path.resolve()
+                                    reference_path.resolve(),
+                                    loc_path.resolve(),
                                 )
                             else:
                                 obj_path = loc_path
@@ -2027,7 +2173,10 @@ class DoclingDocument(BaseModel):
         """Print_element_tree."""
         for ix, (item, level) in enumerate(self.iterate_items(with_groups=True)):
             if isinstance(item, GroupItem):
-                print(" " * level, f"{ix}: {item.label.value} with name={item.name}")
+                print(
+                    " " * level,
+                    f"{ix}: {item.label.value} with name={item.name}",
+                )
             elif isinstance(item, DocItem):
                 print(" " * level, f"{ix}: {item.label.value}")
 
@@ -2100,6 +2249,20 @@ class DoclingDocument(BaseModel):
         with open(filename, "w", encoding="utf-8") as fw:
             yaml.dump(out, fw, default_flow_style=default_flow_style)
 
+    @classmethod
+    def load_from_yaml(cls, filename: Path) -> "DoclingDocument":
+        """load_from_yaml.
+
+        Args:
+            filename: The filename to load a YAML-serialized DoclingDocument from.
+
+        Returns:
+            DoclingDocument: the loaded DoclingDocument
+        """
+        with open(filename, encoding="utf-8") as f:
+            data = yaml.load(f, Loader=yaml.FullLoader)
+        return DoclingDocument.model_validate(data)
+
     def export_to_dict(
         self,
         mode: str = "json",
@@ -2115,7 +2278,7 @@ class DoclingDocument(BaseModel):
         self,
         filename: Path,
         artifacts_dir: Optional[Path] = None,
-        delim: str = "\n",
+        delim: str = "\n\n",  # TODO: deprecate
         from_element: int = 0,
         to_element: int = sys.maxsize,
         labels: set[DocItemLabel] = DEFAULT_EXPORT_LABELS,
@@ -2126,6 +2289,7 @@ class DoclingDocument(BaseModel):
         indent: int = 4,
         text_width: int = -1,
         page_no: Optional[int] = None,
+        included_content_layers: set[ContentLayer] = DEFAULT_CONTENT_LAYERS,
     ):
         """Save to markdown."""
         artifacts_dir, reference_path = self._get_output_paths(filename, artifacts_dir)
@@ -2149,6 +2313,7 @@ class DoclingDocument(BaseModel):
             indent=indent,
             text_width=text_width,
             page_no=page_no,
+            included_content_layers=included_content_layers,
         )
 
         with open(filename, "w", encoding="utf-8") as fw:
@@ -2156,7 +2321,7 @@ class DoclingDocument(BaseModel):
 
     def export_to_markdown(  # noqa: C901
         self,
-        delim: str = "\n",
+        delim: str = "\n\n",  # TODO deprecate
         from_element: int = 0,
         to_element: int = sys.maxsize,
         labels: set[DocItemLabel] = DEFAULT_EXPORT_LABELS,
@@ -2167,6 +2332,7 @@ class DoclingDocument(BaseModel):
         indent: int = 4,
         text_width: int = -1,
         page_no: Optional[int] = None,
+        included_content_layers: set[ContentLayer] = DEFAULT_CONTENT_LAYERS,
     ) -> str:
         r"""Serialize to Markdown.
 
@@ -2202,10 +2368,44 @@ class DoclingDocument(BaseModel):
         :returns: The exported Markdown representation.
         :rtype: str
         """
-        mdtexts: list[str] = []
-        list_nesting_level = 0  # Track the current list nesting level
-        previous_level = 0  # Track the previous item's level
-        in_list = False  # Track if we're currently processing list items
+        comps = self._get_markdown_components(
+            node=self.body,
+            from_element=from_element,
+            to_element=to_element,
+            labels=labels,
+            strict_text=strict_text,
+            escaping_underscores=escaping_underscores,
+            image_placeholder=image_placeholder,
+            image_mode=image_mode,
+            indent=indent,
+            text_width=text_width,
+            page_no=page_no,
+            included_content_layers=included_content_layers,
+            list_level=0,
+            is_inline_scope=False,
+            visited=set(),
+        )
+        return delim.join(comps)
+
+    def _get_markdown_components(  # noqa: C901
+        self,
+        node: NodeItem,
+        from_element: int,
+        to_element: int,
+        labels: set[DocItemLabel],
+        strict_text: bool,
+        escaping_underscores: bool,
+        image_placeholder: str,
+        image_mode: ImageRefMode,
+        indent: int,
+        text_width: int,
+        page_no: Optional[int],
+        included_content_layers: set[ContentLayer],
+        list_level: int,
+        is_inline_scope: bool,
+        visited: set[str],  # refs of visited items
+    ) -> list[str]:
+        components: list[str] = []  # components to concatenate
 
         # Our export markdown doesn't contain any emphasis styling:
         # Bold, Italic, or Bold-Italic
@@ -2240,132 +2440,147 @@ class DoclingDocument(BaseModel):
 
             return "".join(parts)
 
-        def _append_text(text: str, do_escape_html=True, do_escape_underscores=True):
+        def _ingest_text(text: str, do_escape_html=True, do_escape_underscores=True):
             if do_escape_underscores and escaping_underscores:
                 text = _escape_underscores(text)
             if do_escape_html:
                 text = html.escape(text, quote=False)
-            mdtexts.append(text)
+            if text:
+                components.append(text)
 
         for ix, (item, level) in enumerate(
-            self.iterate_items(self.body, with_groups=True, page_no=page_no)
+            self.iterate_items(
+                node,
+                with_groups=True,
+                page_no=page_no,
+                included_content_layers=included_content_layers,
+            )
         ):
-            # If we've moved to a lower level, we're exiting one or more groups
-            if level < previous_level:
-                # Calculate how many levels we've exited
-                level_difference = previous_level - level
-                # Decrement list_nesting_level for each list group we've exited
-                list_nesting_level = max(0, list_nesting_level - level_difference)
-
-            previous_level = level  # Update previous_level for next iteration
+            if item.self_ref in visited:
+                continue
+            else:
+                visited.add(item.self_ref)
 
             if ix < from_element or to_element <= ix:
                 continue  # skip as many items as you want
 
-            if (isinstance(item, DocItem)) and (item.label not in labels):
+            elif (isinstance(item, DocItem)) and (item.label not in labels):
                 continue  # skip any label that is not whitelisted
 
-            # Handle newlines between different types of content
-            if (
-                len(mdtexts) > 0
-                and not isinstance(item, (ListItem, GroupItem))
-                and in_list
-            ):
-                mdtexts[-1] += "\n"
-                in_list = False
-
-            if isinstance(item, GroupItem) and item.label in [
-                GroupLabel.LIST,
-                GroupLabel.ORDERED_LIST,
-            ]:
-
-                if list_nesting_level == 0:  # Check if we're on the top level.
-                    # In that case a new list starts directly after another list.
-                    mdtexts.append("\n")  # Add a blank line
-
-                # Increment list nesting level when entering a new list
-                list_nesting_level += 1
-                in_list = True
-                continue
-
             elif isinstance(item, GroupItem):
-                continue
+                if item.label in [
+                    GroupLabel.LIST,
+                    GroupLabel.ORDERED_LIST,
+                ]:
+                    comps = self._get_markdown_components(
+                        node=item,
+                        from_element=from_element,
+                        to_element=to_element,
+                        labels=labels,
+                        strict_text=strict_text,
+                        escaping_underscores=escaping_underscores,
+                        image_placeholder=image_placeholder,
+                        image_mode=image_mode,
+                        indent=indent,
+                        text_width=text_width,
+                        page_no=page_no,
+                        included_content_layers=included_content_layers,
+                        list_level=list_level + 1,
+                        is_inline_scope=is_inline_scope,
+                        visited=visited,
+                    )
+                    # NOTE: assumes unordered (flag & marker currently in ListItem)
+                    indent_str = f"{(list_level if components else 0) * indent * ' '}"
+                    text = "\n".join(
+                        [
+                            (
+                                # if starting with sublist, promote to top-level
+                                cpt.lstrip()
+                                if not components
+                                else (
+                                    # avoid additional marker on already evaled sublists
+                                    cpt
+                                    if cpt and cpt[0] == " "
+                                    else f"{indent_str}- {cpt}"
+                                )
+                            )
+                            for cpt in comps
+                        ]
+                    )
+                    _ingest_text(text=text)
+                elif item.label == GroupLabel.INLINE:
+                    comps = self._get_markdown_components(
+                        node=item,
+                        from_element=from_element,
+                        to_element=to_element,
+                        labels=labels,
+                        strict_text=strict_text,
+                        escaping_underscores=escaping_underscores,
+                        image_placeholder=image_placeholder,
+                        image_mode=image_mode,
+                        indent=indent,
+                        text_width=text_width,
+                        page_no=page_no,
+                        included_content_layers=included_content_layers,
+                        list_level=list_level,
+                        is_inline_scope=True,
+                        visited=visited,
+                    )
+                    _ingest_text(" ".join(comps))
+                else:
+                    continue
 
             elif isinstance(item, TextItem) and item.label in [DocItemLabel.TITLE]:
-                in_list = False
                 marker = "" if strict_text else "#"
                 text = f"{marker} {item.text}"
-                _append_text(text.strip() + "\n")
+                _ingest_text(text.strip())
 
             elif (
                 isinstance(item, TextItem)
                 and item.label in [DocItemLabel.SECTION_HEADER]
             ) or isinstance(item, SectionHeaderItem):
-                in_list = False
                 marker = ""
                 if not strict_text:
                     marker = "#" * level
                     if len(marker) < 2:
                         marker = "##"
-                text = f"{marker} {item.text}\n"
-                _append_text(text.strip() + "\n")
+                text = f"{marker} {item.text}"
+                _ingest_text(text.strip())
 
-            elif isinstance(item, CodeItem) and item.label in labels:
-                in_list = False
-                text = f"```\n{item.text}\n```\n"
-                _append_text(text, do_escape_underscores=False, do_escape_html=False)
-
-            elif isinstance(item, ListItem) and item.label in [DocItemLabel.LIST_ITEM]:
-                in_list = True
-                # Calculate indent based on list_nesting_level
-                # -1 because level 1 needs no indent
-                list_indent = " " * (indent * (list_nesting_level - 1))
-
-                marker = ""
-                if strict_text:
-                    marker = ""
-                elif item.enumerated:
-                    marker = item.marker
-                else:
-                    marker = "-"  # Markdown needs only dash as item marker.
-
-                text = f"{list_indent}{marker} {item.text}"
-                _append_text(text)
+            elif isinstance(item, CodeItem):
+                text = f"`{item.text}`" if is_inline_scope else f"```\n{item.text}\n```"
+                _ingest_text(text, do_escape_underscores=False, do_escape_html=False)
 
             elif isinstance(item, TextItem) and item.label in [DocItemLabel.FORMULA]:
-                in_list = False
                 if item.text != "":
-                    _append_text(
-                        f"$${item.text}$$\n",
+                    _ingest_text(
+                        f"${item.text}$" if is_inline_scope else f"$${item.text}$$",
                         do_escape_underscores=False,
                         do_escape_html=False,
                     )
                 elif item.orig != "":
-                    _append_text(
-                        "<!-- formula-not-decoded -->\n",
+                    _ingest_text(
+                        "<!-- formula-not-decoded -->",
                         do_escape_underscores=False,
                         do_escape_html=False,
                     )
 
-            elif isinstance(item, TextItem) and item.label in labels:
-                in_list = False
+            elif isinstance(item, TextItem):
                 if len(item.text) and text_width > 0:
                     text = item.text
                     wrapped_text = textwrap.fill(text, width=text_width)
-                    _append_text(wrapped_text + "\n")
+                    _ingest_text(wrapped_text)
                 elif len(item.text):
-                    text = f"{item.text}\n"
-                    _append_text(text)
+                    _ingest_text(item.text)
 
             elif isinstance(item, TableItem) and not strict_text:
-                in_list = False
-                _append_text(item.caption_text(self))
+                if caption_text := item.caption_text(self):
+                    _ingest_text(caption_text)
                 md_table = item.export_to_markdown()
-                _append_text("\n" + md_table + "\n")
+                _ingest_text(md_table)
 
             elif isinstance(item, PictureItem) and not strict_text:
-                in_list = False
-                _append_text(item.caption_text(self))
+                _ingest_text(item.caption_text(self))
 
                 line = item.export_to_markdown(
                     doc=self,
@@ -2373,19 +2588,17 @@ class DoclingDocument(BaseModel):
                     image_mode=image_mode,
                 )
 
-                _append_text(line, do_escape_html=False, do_escape_underscores=False)
+                _ingest_text(line, do_escape_html=False, do_escape_underscores=False)
 
-            elif isinstance(item, DocItem) and item.label in labels:
-                in_list = False
+            elif isinstance(item, (KeyValueItem, FormItem)):
+                text = item._export_to_markdown()
+                _ingest_text(text, do_escape_html=False, do_escape_underscores=False)
+
+            elif isinstance(item, DocItem):
                 text = "<!-- missing-text -->"
-                _append_text(text, do_escape_html=False, do_escape_underscores=False)
+                _ingest_text(text, do_escape_html=False, do_escape_underscores=False)
 
-        mdtext = (delim.join(mdtexts)).strip()
-        mdtext = re.sub(
-            r"\n\n\n+", "\n\n", mdtext
-        )  # remove cases of double or more empty lines.
-
-        return mdtext
+        return components
 
     def export_to_text(  # noqa: C901
         self,
@@ -2417,6 +2630,7 @@ class DoclingDocument(BaseModel):
         page_no: Optional[int] = None,
         html_lang: str = "en",
         html_head: str = _HTML_DEFAULT_HEAD,
+        included_content_layers: set[ContentLayer] = DEFAULT_CONTENT_LAYERS,
     ):
         """Save to HTML."""
         artifacts_dir, reference_path = self._get_output_paths(filename, artifacts_dir)
@@ -2437,6 +2651,7 @@ class DoclingDocument(BaseModel):
             page_no=page_no,
             html_lang=html_lang,
             html_head=html_head,
+            included_content_layers=included_content_layers,
         )
 
         with open(filename, "w", encoding="utf-8") as fw:
@@ -2484,6 +2699,7 @@ class DoclingDocument(BaseModel):
         page_no: Optional[int] = None,
         html_lang: str = "en",
         html_head: str = _HTML_DEFAULT_HEAD,
+        included_content_layers: set[ContentLayer] = DEFAULT_CONTENT_LAYERS,
     ) -> str:
         r"""Serialize to HTML."""
 
@@ -2508,7 +2724,11 @@ class DoclingDocument(BaseModel):
 
             return (in_ordered_list, html_texts)
 
-        head_lines = ["<!DOCTYPE html>", f'<html lang="{html_lang}">', html_head]
+        head_lines = [
+            "<!DOCTYPE html>",
+            f'<html lang="{html_lang}">',
+            html_head,
+        ]
         html_texts: list[str] = []
 
         prev_level = 0  # Track the previous item's level
@@ -2525,7 +2745,12 @@ class DoclingDocument(BaseModel):
             return text
 
         for ix, (item, curr_level) in enumerate(
-            self.iterate_items(self.body, with_groups=True, page_no=page_no)
+            self.iterate_items(
+                self.body,
+                with_groups=True,
+                page_no=page_no,
+                included_content_layers=included_content_layers,
+            )
         ):
             # If we've moved to a lower level, we're exiting one or more groups
             if curr_level < prev_level and len(in_ordered_list) > 0:
@@ -2583,7 +2808,8 @@ class DoclingDocument(BaseModel):
                 section_level: int = min(item.level + 1, 6)
 
                 text = get_html_tag_with_text_direction(
-                    html_tag=f"h{section_level}", text=_prepare_tag_content(item.text)
+                    html_tag=f"h{section_level}",
+                    text=_prepare_tag_content(item.text),
                 )
                 html_texts.append(text)
 
@@ -2604,14 +2830,17 @@ class DoclingDocument(BaseModel):
                             "</figure>"
                         )
 
+                img_fallback = _image_fallback(item)
+
                 # If the formula is not processed correcty, use its image
                 if (
                     item.text == ""
                     and item.orig != ""
                     and image_mode == ImageRefMode.EMBEDDED
                     and len(item.prov) > 0
+                    and img_fallback is not None
                 ):
-                    text = _image_fallback(item)
+                    text = img_fallback
 
                 # Building a math equation in MathML format
                 # ref https://www.w3.org/TR/wai-aria-1.1/#math
@@ -2631,9 +2860,13 @@ class DoclingDocument(BaseModel):
                             "Malformed formula cannot be rendered. "
                             f"Error {err.__class__.__name__}, formula={math_formula}"
                         )
-                        if image_mode == ImageRefMode.EMBEDDED and len(item.prov) > 0:
-                            text = _image_fallback(item)
-                        else:
+                        if (
+                            image_mode == ImageRefMode.EMBEDDED
+                            and len(item.prov) > 0
+                            and img_fallback is not None
+                        ):
+                            text = img_fallback
+                        elif len(math_formula) > 0:
                             text = f"<pre>{math_formula}</pre>"
 
                 elif math_formula != "":
@@ -2779,9 +3012,9 @@ class DoclingDocument(BaseModel):
             while current_level < previous_level and ordered_list_stack:
                 last_is_ordered = ordered_list_stack.pop()
                 if last_is_ordered:
-                    output_parts.append("</ordered_list>\n")
+                    output_parts.append(f"</{DocumentToken.ORDERED_LIST.value}>\n")
                 else:
-                    output_parts.append("</unordered_list>\n")
+                    output_parts.append(f"</{DocumentToken.UNORDERED_LIST.value}>\n")
                 previous_level -= 1
             return ordered_list_stack
 
@@ -2808,7 +3041,7 @@ class DoclingDocument(BaseModel):
                 return output_parts, current_page_no
 
             if current_page_no != prev_page_no:
-                output_parts.append(f"{DocumentToken.PAGE_BREAK.value}\n")
+                output_parts.append(f"<{DocumentToken.PAGE_BREAK.value}>\n")
 
             return output_parts, current_page_no
 
@@ -2834,19 +3067,25 @@ class DoclingDocument(BaseModel):
         standalone_captions = _get_standalone_captions(self.body)
 
         # Begin document
-        output_parts.append(f"{DocumentToken.BEG_DOCUMENT.value}{delim}")
+        output_parts.append(f"<{DocumentToken.DOCUMENT.value}>{delim}")
 
         for ix, (item, current_level) in enumerate(
             self.iterate_items(
                 self.body,
                 with_groups=True,
-                included_content_layers={ContentLayer.BODY, ContentLayer.FURNITURE},
+                included_content_layers={
+                    ContentLayer.BODY,
+                    ContentLayer.FURNITURE,
+                },
             )
         ):
             # Close lists if we've moved to a lower nesting level
             if current_level < previous_level and ordered_list_stack:
                 ordered_list_stack = _close_lists(
-                    current_level, previous_level, ordered_list_stack, output_parts
+                    current_level,
+                    previous_level,
+                    ordered_list_stack,
+                    output_parts,
                 )
             previous_level = current_level
 
@@ -2870,10 +3109,12 @@ class DoclingDocument(BaseModel):
             # Handle list groups
             if isinstance(item, GroupItem):
                 if item.label == GroupLabel.ORDERED_LIST:
-                    output_parts.append(f"<ordered_list>{delim}")
+                    output_parts.append(f"<{DocumentToken.ORDERED_LIST.value}>{delim}")
                     ordered_list_stack.append(True)
                 elif item.label == GroupLabel.LIST:
-                    output_parts.append(f"<unordered_list>{delim}")
+                    output_parts.append(
+                        f"<{DocumentToken.UNORDERED_LIST.value}>{delim}"
+                    )
                     ordered_list_stack.append(False)
                 continue
 
@@ -2947,12 +3188,15 @@ class DoclingDocument(BaseModel):
         )
 
         # End document
-        output_parts.append(DocumentToken.END_DOCUMENT.value)
+        output_parts.append(f"</{DocumentToken.DOCUMENT.value}>")
 
         return "".join(output_parts)
 
     def _export_to_indented_text(
-        self, indent="  ", max_text_len: int = -1, explicit_tables: bool = False
+        self,
+        indent="  ",
+        max_text_len: int = -1,
+        explicit_tables: bool = False,
     ):
         """Export the document to indented text to expose hierarchy."""
         result = []
